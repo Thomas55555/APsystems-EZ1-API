@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-import re
-
+import logging
 import datetime
 from aiohttp import ClientSession
 from aiohttp.http_exceptions import HttpBadRequest
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class InverterReturnedError(Exception):
@@ -18,7 +19,6 @@ class ReturnDeviceInfo:
     ipAddr: str
     minPower: int
     maxPower: int
-    isBatterySystem: bool
 
 
 @dataclass
@@ -38,18 +38,6 @@ class ReturnOutputData:
     e2: float
     te2: float
 
-    def __init__(self, **data):
-        '''The data attribute needs to be set manually because the inverter local interface 
-        may return more results than the existing data attributes (such as originalData),
-          resulting in an error. '''
-        self.p1 = data.get("p1", 0.0)
-        self.e1 = data.get("e1", 0.0)
-        self.te1 = data.get("te1", 0.0)
-        self.p2 = data.get("p2", 0.0)
-        self.e2 = data.get("e2", 0.0)
-        self.te2 = data.get("te2", 0.0)
-
-IS_BATTERY_REGEX = re.compile("^.*_b$")
 
 class APsystemsEZ1M:
     """This class represents an EZ1 Microinverter and provides methods to interact with it
@@ -114,9 +102,7 @@ class APsystemsEZ1M:
                     raise HttpBadRequest(f"HTTP Error: {resp.status}")
                 if data["message"] == "SUCCESS":
                     return data
-                if (
-                    retry
-                ):  # Re-run request when the inverter returned failed because of unknown reason
+                if retry:  # Re-run request when the inverter returned failed because of unknown reason
                     return await self._request(endpoint, retry=False)
                 raise InverterReturnedError
         finally:
@@ -171,6 +157,7 @@ class APsystemsEZ1M:
 
         """
         response = await self._request("getDeviceInfo")
+        _LOGGER.debug("getDeviceInfo: %s", response)
         return (
             ReturnDeviceInfo(
                 deviceId=response["data"]["deviceId"],
@@ -179,7 +166,6 @@ class APsystemsEZ1M:
                 ipAddr=response["data"]["ipAddr"],
                 minPower=int(response["data"]["minPower"]),
                 maxPower=int(response["data"]["maxPower"]),
-                isBatterySystem=bool(IS_BATTERY_REGEX.match(response["data"]["devVer"]))
             )
             if response and response.get("data")
             else None
@@ -201,6 +187,7 @@ class APsystemsEZ1M:
         :return: Information about possible point of failures
         """
         response = await self._request("getAlarm")
+        _LOGGER.debug("getAlarm: %s", response)
         return (
             ReturnAlarmInfo(
                 offgrid=bool(int(response["data"]["og"])),
@@ -232,6 +219,7 @@ class APsystemsEZ1M:
         :return: Information about energy/power-related information
         """
         response = await self._request("getOutputData")
+        _LOGGER.debug("getOutputData: %s", response)
 
         if self.enable_debounce and response:
             response["data"].update(
@@ -289,6 +277,7 @@ class APsystemsEZ1M:
         :return: Max output power in watts
         """
         response = await self._request("getMaxPower")
+        _LOGGER.debug("getMaxPower: %s", response)
         if response is None or response["data"]["maxPower"] == "":
             return None
         return int(response["data"]["maxPower"])
@@ -329,8 +318,9 @@ class APsystemsEZ1M:
         :return: 0/normal when on, 1/alarm when off
         """
         response = await self._request("getOnOff")
+        _LOGGER.debug("getOnOff: %s", response)
 
-        match (status := response["data"]["status"]):
+        match status := response["data"]["status"]:
             case int():
                 return not bool(status)
             case str() if status.isdigit():
@@ -364,3 +354,4 @@ class APsystemsEZ1M:
             status_value = "1"
         request = await self._request(f"setOnOff?status={status_value}")
         return not bool(int(request["data"]["status"])) if request else None
+
